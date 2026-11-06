@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Daily Last.fm snapshot. EventBridge Scheduler invokes a Lambda that pulls tag charts, the global chart
+  and artist listener counts, and writes dated JSON Lines files to the existing data bucket under raw/lastfm/.
+
+Parameters:
+  DataBucket:
+    Type: String
+    Description: Existing S3 bucket that receives the raw snapshots.
+  CodeKey:
+    Type: String
+    Description: S3 key of the Lambda deployment zip inside DataBucket.
+  ApiKeyParameterName:
+    Type: String
+    Default: /music-pipeline/lastfm-api-key
+    Description: SSM SecureString parameter that holds the Last.fm API key.
+  ScheduleCron:
+    Type: String
+    Default: cron(30 10 * * ? *)
+    Description: Daily run time in UTC, offset from the Deezer pull.
+  PerTag:
+    Type: Number
+    Default: 25
+    Description: Artists pulled for each tag.
+
+Resources:
+  PullLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-lastfm-pull
+      RetentionInDays: 30
+
+  PullFunctionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Least-privilege execution role.
+        must: Write only to raw/lastfm/ in the data bucket, read only the artist cross-reference file and the one API key parameter.
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: lastfm-pull-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${DataBucket}/raw/lastfm/*
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${DataBucket}/reference/artist_xref/*
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiKeyParameterName}
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${PullLogGroup.Arn}:*
+
+  PullFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Event Function on On-Demand capacity; the pull takes several minutes and runs once a day.
+        must: Timeout stays below the 900 second Lambda maximum. Same-day re-runs overwrite that day's partition.
+    DependsOn: PullLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-lastfm-pull
+      Runtime: python3.13
+      Handler: lastfm_handler.lambda_handler
+      Role: !GetAtt PullFunctionRole.Arn
+      Code:
+        S3Bucket: !Ref DataBucket
+        S3Key: !Ref CodeKey
+      Timeout: 900
+      MemorySize: 256
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
+          PER_TAG: !Ref PerTag
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke-pull-function
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt PullFunction.Arn
+
+  DailySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub ${AWS::StackName}-daily
+      ScheduleExpression: !Ref ScheduleCron
+      ScheduleExpressionTimezone: UTC
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt PullFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{}"
+        RetryPolicy:
+          MaximumRetryAttempts: 2
+          MaximumEventAgeInSeconds: 3600
+
+Outputs:
+  FunctionName:
+    Value: !Ref PullFunction
+  LogGroupName:
+    Value: !Ref PullLogGroup

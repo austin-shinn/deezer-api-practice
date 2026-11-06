@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Athena workgroup and Glue catalog tables over the raw Deezer JSON Lines snapshots in the data bucket.
+  Tables use partition projection on dt, so new daily partitions are queryable with no crawler or MSCK.
+
+Parameters:
+  DataBucket:
+    Type: String
+    Description: Existing S3 bucket that holds raw/deezer/ and receives Athena results.
+  DatabaseName:
+    Type: String
+    Default: music_trends
+  ProjectionStartDate:
+    Type: String
+    Default: "2026-11-02"
+    Description: Earliest dt partition to project (yyyy-MM-dd).
+
+Resources:
+  Database:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref DatabaseName
+        Description: Raw music popularity snapshots
+
+  WorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Dedicated workgroup so results land under athena-results/ and a runaway query is capped.
+        must: Keep the per-query scan cutoff; data is small, so 1 GB is far above normal need.
+    Properties:
+      Name: music-trends
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: 1073741824
+        ResultConfiguration:
+          OutputLocation: !Sub s3://${DataBucket}/athena-results/
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+
+  GenresTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: deezer_genres
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/deezer/genres/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/deezer/genres/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: genre_id, Type: int }
+            - { Name: genre_name, Type: string }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  GenreChartTracksTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: deezer_genre_chart_tracks
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/deezer/genre_chart_tracks/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/deezer/genre_chart_tracks/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: genre_id, Type: int }
+            - { Name: genre_name, Type: string }
+            - { Name: position, Type: int }
+            - { Name: track_id, Type: bigint }
+            - { Name: track_title, Type: string }
+            - { Name: track_rank, Type: bigint }
+            - { Name: artist_id, Type: bigint }
+            - { Name: artist_name, Type: string }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  ArtistsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: deezer_artists
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/deezer/artists/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/deezer/artists/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: artist_id, Type: bigint }
+            - { Name: name, Type: string }
+            - { Name: nb_fan, Type: bigint }
+            - { Name: nb_album, Type: int }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  LastfmTagTopArtistsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: lastfm_tag_top_artists
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/lastfm/tag_top_artists/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/lastfm/tag_top_artists/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: tag, Type: string }
+            - { Name: rank, Type: int }
+            - { Name: artist_name, Type: string }
+            - { Name: mbid, Type: string }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  LastfmChartTopArtistsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: lastfm_chart_top_artists
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/lastfm/chart_top_artists/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/lastfm/chart_top_artists/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: rank, Type: int }
+            - { Name: artist_name, Type: string }
+            - { Name: mbid, Type: string }
+            - { Name: playcount, Type: bigint }
+            - { Name: listeners, Type: bigint }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  LastfmArtistsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: lastfm_artists
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - { Name: dt, Type: string }
+        Parameters:
+          classification: json
+          projection.enabled: "true"
+          projection.dt.type: date
+          projection.dt.format: yyyy-MM-dd
+          projection.dt.range: !Sub ${ProjectionStartDate},NOW
+          projection.dt.interval: "1"
+          projection.dt.interval.unit: DAYS
+          storage.location.template: !Sub s3://${DataBucket}/raw/lastfm/artists/dt=${!dt}
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/raw/lastfm/artists/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: artist_name, Type: string }
+            - { Name: mbid, Type: string }
+            - { Name: listeners, Type: bigint }
+            - { Name: playcount, Type: bigint }
+            - { Name: top_tags, Type: "array<string>" }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+  ArtistXrefTable:
+    Type: AWS::Glue::Table
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Maps Deezer artist IDs to Last.fm names and MusicBrainz IDs so the two sources can be joined reliably.
+        must: Not date-partitioned. Only rows with match_method name_normalized or lastfm_lookup are trusted.
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: artist_xref
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+        StorageDescriptor:
+          Location: !Sub s3://${DataBucket}/reference/artist_xref/
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - { Name: deezer_artist_id, Type: bigint }
+            - { Name: deezer_name, Type: string }
+            - { Name: lastfm_name, Type: string }
+            - { Name: mbid, Type: string }
+            - { Name: match_method, Type: string }
+            - { Name: checked_at, Type: string }
+            - { Name: load_date, Type: string }
+            - { Name: fetched_at, Type: string }
+
+Outputs:
+  Database:
+    Value: !Ref Database
+  WorkGroup:
+    Value: !Ref WorkGroup
