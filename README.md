@@ -9,3 +9,5 @@ The notebook (`deezer_api_practice.ipynb`) covers:
 - retrying rate-limited calls
 - turning API responses into DataFrames
 - uploading to S3 bucket in AWS
+
+Goals are to 1. schedule daily runs in Lambda then 2. pull and transform in Athena, 3. creating some visualizations with the data.
