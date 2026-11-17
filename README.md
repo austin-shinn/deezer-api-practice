@@ -1,4 +1,4 @@
-# api-practice
+# deezer-api-practice
 
 A practice notebook for pulling data from the public [Deezer API](https://developers.deezer.com/api)
 
